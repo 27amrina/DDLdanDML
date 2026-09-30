@@ -82,6 +82,9 @@ code{font-family:"Cascadia Code","Fira Code",Consolas,monospace;background:#eef4
 @media(max-width:520px){.hero-copy h1{font-size:38px}.hero-copy{padding:24px}.start-card{padding:24px}.top-actions .icon-btn{white-space:nowrap}.task-head{display:block}.task-points{display:inline-block;margin-top:4px}.editor-toolbar .small-btn,.editor-toolbar .run-btn,.editor-toolbar .check-btn{flex:1}.editor-footer{align-items:flex-start;flex-direction:column}.pager{gap:10px}.pager button{flex:1}.score-card{display:none}}
 @media print{.topbar,.sidebar,.right-rail,.editor-toolbar,.pager{display:none!important}.workspace-grid{display:block}.main{padding:0}.task-card,.editor-card,.result-card{box-shadow:none;border:1px solid #ccc}.sql-editor{color:#000;background:#fff}.editor-wrap{background:#fff}}
 
+/* LOCAL STORAGE / RESUME */
+.resume-notice{margin:0 0 18px;padding:14px;border:1px solid #cfe1f2;background:linear-gradient(135deg,#f0f7ff,#f4fffb);border-radius:14px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center}.resume-icon{width:38px;height:38px;border-radius:11px;background:#fff;display:grid;place-items:center;font-size:20px;box-shadow:0 5px 14px rgba(24,78,126,.10)}.resume-copy b{display:block;color:#153d65;font-size:13px}.resume-copy span{display:block;color:#64768a;font-size:11px;line-height:1.45;margin-top:2px}.resume-actions{grid-column:1/-1;display:flex;gap:8px}.resume-actions button{flex:1;border-radius:9px;padding:9px 10px;font-weight:800;font-size:11px}.resume-primary{border:0;background:linear-gradient(135deg,var(--blue),var(--teal));color:#fff}.resume-secondary{border:1px solid #d7e3ee;background:#fff;color:#50657b}.saved-label.saved-ok{color:#13724c;font-weight:800}.saved-label.saved-error{color:#a54539;font-weight:800}
+
 </style>
 </head>
 <body>
@@ -100,11 +103,16 @@ code{font-family:"Cascadia Code","Fira Code",Consolas,monospace;background:#eef4
         <div class="brand-line"><div class="brand-mark">DB</div><div><b>Basis Data PPLG</b><small>Sistem Inventaris Laboratorium Komputer</small></div></div>
         <h2>Mulai Praktik</h2>
         <p>Isi identitas terlebih dahulu. Progres, query, dan database akan tersimpan otomatis pada browser perangkat ini.</p>
+        <div id="resumeNotice" class="resume-notice hidden">
+          <div class="resume-icon">💾</div>
+          <div class="resume-copy"><b>Progres tersimpan ditemukan</b><span id="resumeInfo">Anda dapat melanjutkan pekerjaan terakhir.</span></div>
+          <div class="resume-actions"><button id="resumeBtn" type="button" class="resume-primary">Lanjutkan Progres</button><button id="newSessionBtn" type="button" class="resume-secondary">Mulai Baru</button></div>
+        </div>
         <div class="form-group"><label for="studentName">Nama siswa *</label><input id="studentName" autocomplete="name" placeholder="Contoh: Ahmad Fauzan" required></div>
         <div class="form-group"><label for="studentClass">Kelas *</label><input id="studentClass" placeholder="Contoh: XI PPLG" required></div>
         <div class="form-group"><label for="studentNis">NIS / NISN</label><input id="studentNis" placeholder="Opsional"></div>
         <button class="primary-btn" type="submit">Masuk ke Ruang Praktik →</button>
-        <div class="start-note"><b>Catatan:</b> simulator mendukung perintah yang diperlukan dalam tugas ini: CREATE DATABASE/TABLE, ALTER, INSERT, UPDATE, DELETE, SELECT, WHERE, ORDER BY, JOIN, DROP, TRUNCATE, SHOW TABLES, dan DESCRIBE.</div>
+        <div class="start-note"><b>Penyimpanan otomatis:</b> identitas, seluruh query, progres soal, skor, dan kondisi database simulator disimpan ke <b>Local Storage</b>. Saat file ini dibuka kembali pada <b>browser dan perangkat yang sama</b>, progres dapat dilanjutkan. Hindari mode Incognito/Private jika ingin data tetap tersimpan.<br><br><b>Simulator SQL:</b> mendukung CREATE DATABASE/TABLE, ALTER, INSERT, UPDATE, DELETE, SELECT, WHERE, ORDER BY, JOIN, DROP, TRUNCATE, SHOW TABLES, dan DESCRIBE.</div>
       </form>
     </div>
   </section>
@@ -858,6 +866,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = MiniSqlEng
 /* Website Praktik Basis Data - PPLG */
 const engine = new MiniSqlEngine();
 const STORAGE_KEY = 'pplg_basisdata_praktik_v1';
+const STORAGE_VERSION = 2;
+let storageEnabled = true;
 
 const tasks = [
   {
@@ -1148,24 +1158,81 @@ function lastSelect(results){ return [...(results||[])].reverse().find(r=>r.type
 function loadState(){
   try{
     const raw=localStorage.getItem(STORAGE_KEY);
-    if(!raw) return;
+    if(!raw) return false;
     const saved=JSON.parse(raw);
     state={...state,...saved, student:{...state.student,...(saved.student||{})}};
     if(saved.engine) engine.load(saved.engine);
-  }catch(err){ console.warn('Gagal memuat data tersimpan',err); }
+    storageEnabled=true;
+    return true;
+  }catch(err){
+    storageEnabled=false;
+    console.warn('Gagal memuat data tersimpan',err);
+    return false;
+  }
 }
 
 function saveState(){
-  state.lastSaved=new Date().toISOString();
-  const payload={...state,engine:JSON.parse(engine.serialize())};
-  localStorage.setItem(STORAGE_KEY,JSON.stringify(payload));
-  updateSavedLabel();
+  if(!storageEnabled) { updateSavedLabel(true); return false; }
+  try{
+    state.lastSaved=new Date().toISOString();
+    const payload={version:STORAGE_VERSION,...state,engine:JSON.parse(engine.serialize())};
+    localStorage.setItem(STORAGE_KEY,JSON.stringify(payload));
+    updateSavedLabel();
+    return true;
+  }catch(err){
+    storageEnabled=false;
+    console.warn('Gagal menyimpan Local Storage',err);
+    updateSavedLabel(true);
+    return false;
+  }
 }
 
-function updateSavedLabel(){
+function updateSavedLabel(error=false){
   const el=document.getElementById('savedLabel');
   if(!el) return;
-  el.textContent=state.lastSaved ? 'Tersimpan otomatis' : 'Belum tersimpan';
+  el.classList.toggle('saved-ok',!error && !!state.lastSaved);
+  el.classList.toggle('saved-error',!!error);
+  if(error){ el.textContent='Gagal menyimpan'; return; }
+  if(!state.lastSaved){ el.textContent='Belum tersimpan'; return; }
+  const d=new Date(state.lastSaved);
+  const time=Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  el.textContent=`Tersimpan lokal${time?' • '+time:''}`;
+}
+
+function hasSavedProgress(){
+  const hasAnswers=Object.values(state.answers||{}).some(v=>String(v||'').trim());
+  const hasCompleted=Object.values(state.completed||{}).some(Boolean);
+  const hasDb=!!(engine.activeDatabase && engine.activeDatabase!=='__session__') || (engine.tableInfo?.().length>0);
+  return !!(state.startedAt || hasAnswers || hasCompleted || hasDb);
+}
+
+function hydrateIdentityInputs(){
+  const n=document.getElementById('studentName'), c=document.getElementById('studentClass'), i=document.getElementById('studentNis');
+  if(n) n.value=state.student.name||'';
+  if(c) c.value=state.student.className||'';
+  if(i) i.value=state.student.nis||'';
+}
+
+function updateResumeNotice(){
+  const box=document.getElementById('resumeNotice');
+  if(!box) return;
+  const canResume=!!state.student.name && hasSavedProgress();
+  box.classList.toggle('hidden',!canResume);
+  if(canResume){
+    const d=state.lastSaved?new Date(state.lastSaved):null;
+    const stamp=d && !Number.isNaN(d.getTime()) ? d.toLocaleString('id-ID') : 'waktu sebelumnya';
+    const info=document.getElementById('resumeInfo');
+    if(info) info.textContent=`${state.student.name} • Soal ${state.currentTask||1} • ${completedCount()}/${tasks.length} selesai • terakhir disimpan ${stamp}.`;
+  }
+}
+
+function clearStoredSession(keepIdentity=true){
+  const student=keepIdentity?{...state.student}:{name:'',className:'',nis:''};
+  try{ localStorage.removeItem(STORAGE_KEY); }catch(_){}
+  engine.reset();
+  state={student,answers:{},completed:{},feedback:{},currentTask:1,startedAt:null,lastSaved:null};
+  currentResults=[];
+  storageEnabled=true;
 }
 
 function totalScore(){
@@ -1174,16 +1241,44 @@ function totalScore(){
 function completedCount(){ return tasks.filter(t=>state.completed[t.id]).length; }
 
 function init(){
-  loadState();
+  const restored=loadState();
   bindGlobalEvents();
-  if(state.student.name){
-    showWorkspace();
-  }else{
-    showLanding();
+  hydrateIdentityInputs();
+  // Tampilkan halaman awal agar pengguna dapat memilih melanjutkan progres tersimpan.
+  showLanding(true);
+  updateResumeNotice();
+  if(restored && state.student.name && hasSavedProgress()){
+    setTimeout(()=>toast('Progres sebelumnya ditemukan di Local Storage. Klik “Lanjutkan Progres” untuk meneruskan.','success'),250);
   }
 }
 
 function bindGlobalEvents(){
+  const identityIds=['studentName','studentClass','studentNis'];
+  identityIds.forEach(id=>document.getElementById(id)?.addEventListener('input',()=>{
+    state.student={
+      name:document.getElementById('studentName').value.trim(),
+      className:document.getElementById('studentClass').value.trim(),
+      nis:document.getElementById('studentNis').value.trim()
+    };
+    window.clearTimeout(window.__identitySaveTimer);
+    window.__identitySaveTimer=setTimeout(()=>{ saveState(); updateResumeNotice(); },350);
+  }));
+
+  document.getElementById('resumeBtn')?.addEventListener('click',()=>{
+    if(!state.student.name){ return; }
+    showWorkspace();
+    updateSavedLabel();
+    toast('Progres berhasil dimuat kembali dari Local Storage.','success');
+  });
+  document.getElementById('newSessionBtn')?.addEventListener('click',()=>{
+    if(!confirm('Mulai sesi baru? Seluruh jawaban, skor, dan database simulator yang tersimpan akan dihapus.')) return;
+    clearStoredSession(true);
+    hydrateIdentityInputs();
+    updateResumeNotice();
+    updateSavedLabel();
+    toast('Sesi baru siap. Identitas tetap dipertahankan.','success');
+  });
+
   document.getElementById('startForm').addEventListener('submit', e=>{
     e.preventDefault();
     const name=document.getElementById('studentName').value.trim();
@@ -1222,28 +1317,34 @@ function bindGlobalEvents(){
   document.getElementById('sqlEditor').addEventListener('input',()=>{
     const t=getCurrentTask(); state.answers[t.id]=document.getElementById('sqlEditor').value;
     window.clearTimeout(window.__saveTimer);
-    window.__saveTimer=setTimeout(saveState,600);
+    window.__saveTimer=setTimeout(saveState,350);
   });
   document.addEventListener('keydown',e=>{
     if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){ e.preventDefault(); runCurrent(true); }
     if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){ e.preventDefault(); captureAnswer(); saveState(); toast('Jawaban disimpan.','success'); }
   });
+
+  // Simpan juga ketika tab ditutup, direfresh, dipindah ke background, atau halaman ditinggalkan.
+  const flushSave=()=>{
+    try{ captureAnswer(); }catch(_){}
+    saveState();
+  };
+  window.addEventListener('pagehide',flushSave);
+  window.addEventListener('beforeunload',flushSave);
+  document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flushSave(); });
 }
 
 function showLanding(keepValues=false){
   document.getElementById('landing').classList.remove('hidden');
   document.getElementById('workspace').classList.add('hidden');
-  if(keepValues||state.student.name){
-    document.getElementById('studentName').value=state.student.name||'';
-    document.getElementById('studentClass').value=state.student.className||'';
-    document.getElementById('studentNis').value=state.student.nis||'';
-  }
+  if(keepValues||state.student.name) hydrateIdentityInputs();
+  updateResumeNotice();
 }
 
 function showWorkspace(){
   document.getElementById('landing').classList.add('hidden');
   document.getElementById('workspace').classList.remove('hidden');
-  renderStudent(); renderTaskNav(); renderTask(state.currentTask||1); updateDashboard(); renderDbExplorer();
+  renderStudent(); renderTaskNav(); renderTask(state.currentTask||1); updateDashboard(); renderDbExplorer(); updateSavedLabel();
 }
 
 function renderStudent(){
