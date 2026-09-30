@@ -121,11 +121,24 @@ USE inventaris_lab;</pre></div>
   id INT AUTO_INCREMENT PRIMARY KEY,
   nama VARCHAR(100) NOT NULL
 );</pre></div>
+      <div class="help-item"><b>ALTER TABLE</b><pre>-- Satu ALTER, dua kolom
+ALTER TABLE barang
+ADD COLUMN harga DECIMAL(12,2),
+ADD COLUMN merek VARCHAR(50);
+
+-- Atau dua ALTER terpisah
+ALTER TABLE barang ADD harga DECIMAL(12,2);
+ALTER TABLE barang ADD merek VARCHAR(50);</pre></div>
       <div class="help-item"><b>INSERT</b><pre>INSERT INTO contoh (nama)
 VALUES ('Data A'), ('Data B');</pre></div>
       <div class="help-item"><b>UPDATE</b><pre>UPDATE contoh
 SET nama = 'Baru'
-WHERE id = 1;</pre></div>
+WHERE id = 1;
+
+-- Operasi angka juga didukung
+UPDATE barang
+SET jumlah = jumlah - 3
+WHERE kode_barang = 'BRG003';</pre></div>
       <div class="help-item"><b>DELETE</b><pre>DELETE FROM contoh
 WHERE id = 1;</pre></div>
       <div class="help-item"><b>SELECT / ORDER BY</b><pre>SELECT * FROM contoh

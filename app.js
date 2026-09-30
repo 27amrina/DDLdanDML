@@ -1,7 +1,7 @@
 /* Website Praktik Basis Data - PPLG */
 const engine = new MiniSqlEngine();
 const STORAGE_KEY = 'pplg_basisdata_praktik_v1';
-const STORAGE_VERSION = 3;
+const STORAGE_VERSION = 4;
 let storageEnabled = true;
 
 const tasks = [
@@ -65,12 +65,12 @@ const tasks = [
     id: 5, section: 'A', title: 'ALTER TABLE', points: 5,
     prompt: `Tambahkan dua field baru pada tabel <code>barang</code>: <code>harga DECIMAL(12,2)</code> dan <code>merek VARCHAR(50)</code> menggunakan <code>ALTER TABLE</code>.`,
     checklist: ['Tambah kolom harga', 'Tambah kolom merek', 'Gunakan ALTER TABLE'],
-    placeholder: `ALTER TABLE barang ADD ...;\nALTER TABLE barang ADD ...;`,
+    placeholder: `-- Boleh satu ALTER dengan dua ADD, atau dua ALTER terpisah\nALTER TABLE barang\nADD COLUMN harga DECIMAL(12,2),\nADD COLUMN merek VARCHAR(50);`,
     validate: ({sql}) => {
       const t=table('barang');
       const harga=t&&col(t,'harga'), merek=t&&col(t,'merek');
-      const used=(sql.match(/ALTER\s+TABLE/gi)||[]).length>=2;
-      return verdict(!!(harga && typeEq(harga,'DECIMAL(12,2)') && merek && typeEq(merek,'VARCHAR(50)') && used), 'Tambahkan harga DECIMAL(12,2) dan merek VARCHAR(50) menggunakan dua perintah ALTER TABLE.');
+      const used=(sql.match(/ALTER\s+TABLE/gi)||[]).length>=1;
+      return verdict(!!(harga && typeEq(harga,'DECIMAL(12,2)') && merek && typeEq(merek,'VARCHAR(50)') && used), 'Tambahkan harga DECIMAL(12,2) dan merek VARCHAR(50) menggunakan ALTER TABLE. Boleh satu ALTER dengan dua ADD COLUMN atau dua ALTER terpisah.');
     }
   },
   {
@@ -103,10 +103,23 @@ const tasks = [
     checklist: ['BRG001 sampai BRG006 tersedia', 'Relasi kategori/lokasi valid', 'Harga dan merek terisi'],
     placeholder: `INSERT INTO barang\n(kode_barang, nama_barang, id_kategori, id_lokasi, jumlah, kondisi, tahun_pengadaan, harga, merek)\nVALUES\n(...);`,
     validate: () => {
-      const t=table('barang'); if(!t) return verdict(false,'Tabel barang belum tersedia.');
-      const req=['BRG001','BRG002','BRG003','BRG004','BRG005','BRG006'];
-      const ok=req.every(v=>t.rows.some(r=>norm(r.kode_barang)===norm(v)));
-      return verdict(ok, 'Pastikan data BRG001 sampai BRG006 sudah dimasukkan.');
+      const b=table('barang'), k=table('kategori'), l=table('lokasi');
+      if(!b||!k||!l) return verdict(false,'Tabel barang/kategori/lokasi belum tersedia.');
+      const kid=(name)=>k.rows.find(r=>norm(r.nama_kategori)===norm(name))?.id_kategori;
+      const lid=(name)=>l.rows.find(r=>norm(r.nama_lokasi)===norm(name))?.id_lokasi;
+      const expected=[
+        ['BRG001','PC Desktop','Komputer','Lab Komputer 1',20,'Baik',2025,7500000,'Lenovo'],
+        ['BRG002','Keyboard USB','Perangkat Input','Lab Komputer 1',20,'Baik',2025,150000,'Logitech'],
+        ['BRG003','Mouse USB','Perangkat Input','Lab Komputer 1',20,'Baik',2025,100000,'Logitech'],
+        ['BRG004','Monitor LED 24 Inch','Perangkat Output','Lab Komputer 1',20,'Baik',2025,1800000,'Samsung'],
+        ['BRG005','Switch 24 Port','Jaringan','Ruang Server',2,'Baik',2024,2500000,'TP-Link'],
+        ['BRG006','Proyektor','Perangkat Output','Lab Komputer 2',1,'Baik',2023,8000000,'Epson']
+      ];
+      const ok=expected.every(([kode,nama,kat,lok,jumlah,kondisi,tahun,harga,merek])=>{
+        const r=b.rows.find(x=>norm(x.kode_barang)===norm(kode));
+        return r && norm(r.nama_barang)===norm(nama) && String(r.id_kategori)===String(kid(kat)) && String(r.id_lokasi)===String(lid(lok)) && Number(r.jumlah)===jumlah && norm(r.kondisi)===norm(kondisi) && Number(r.tahun_pengadaan)===tahun && Number(r.harga)===harga && norm(r.merek)===norm(merek);
+      });
+      return verdict(!!ok, 'Periksa kembali BRG001-BRG006: nama, kategori, lokasi, jumlah, kondisi, tahun, harga, dan merek harus sesuai data soal.');
     }
   },
   {
@@ -118,9 +131,10 @@ const tasks = [
       const k=table('kategori'), b=table('barang');
       if(!k||!b) return verdict(false,'Tabel kategori/barang belum tersedia.');
       const kat=k.rows.find(r=>norm(r.nama_kategori)==='penyimpanan');
+      const gudang=table('lokasi')?.rows?.find(r=>norm(r.nama_lokasi)==='gudang it');
       const row=b.rows.find(r=>norm(r.kode_barang)==='brg007');
-      const ok=kat && row && Number(row.jumlah)===5 && Number(row.tahun_pengadaan)===2026 && Number(row.harga)===1200000 && norm(row.merek)==='kingston';
-      return verdict(!!ok, 'Kategori Penyimpanan dan data BRG007 belum sesuai.');
+      const ok=kat && gudang && row && String(row.id_kategori)===String(kat.id_kategori) && String(row.id_lokasi)===String(gudang.id_lokasi) && Number(row.jumlah)===5 && norm(row.kondisi)==='baik' && Number(row.tahun_pengadaan)===2026 && Number(row.harga)===1200000 && norm(row.merek)==='kingston';
+      return verdict(!!ok, 'Pastikan BRG007 terhubung ke kategori Penyimpanan dan Gudang IT, jumlah 5, kondisi Baik, tahun 2026, harga 1200000, dan merek Kingston.');
     }
   },
   {
@@ -152,7 +166,7 @@ const tasks = [
     validate: ({sql}) => {
       const row=findBarang('BRG006'), loc=idLokasiByName('Lab Komputer 1');
       const updateCount=(sql.match(/\bUPDATE\b/gi)||[]).length;
-      return verdict(!!(row && norm(row.kondisi)==='baik' && String(row.id_lokasi)===String(loc) && updateCount===1), 'Gunakan satu UPDATE untuk mengubah kondisi menjadi Baik dan lokasi ke Lab Komputer 1.');
+      return verdict(!!(row && norm(row.kondisi)==='baik' && String(row.id_lokasi)===String(loc) && updateCount===1 && /\bWHERE\b/i.test(sql)), 'Gunakan satu UPDATE dengan WHERE untuk mengubah kondisi BRG006 menjadi Baik dan lokasi ke Lab Komputer 1.');
     }
   },
   {
@@ -173,8 +187,12 @@ const tasks = [
     placeholder: `SELECT ... FROM barang;`,
     validate: ({sql, results}) => {
       const r=lastSelect(results); const t=table('barang');
-      const ok=/SELECT\s+\*/i.test(sql) && r && t && r.rows.length===t.rows.length;
-      return verdict(!!ok, 'Gunakan SELECT * FROM barang dan pastikan semua record tampil.');
+      if(!r||!t) return verdict(false,'Belum ada hasil SELECT dari tabel barang.');
+      const expectedCols=t.columns.map(c=>norm(c.name));
+      const resultCols=(r.columns||[]).map(norm);
+      const allColumns=expectedCols.every(c=>resultCols.includes(c));
+      const ok=/\bSELECT\b/i.test(sql) && /\bFROM\s+barang\b/i.test(sql) && r.rows.length===t.rows.length && allColumns;
+      return verdict(!!ok, 'Tampilkan seluruh record dan seluruh kolom tabel barang. SELECT * atau daftar semua kolom sama-sama diterima.');
     }
   },
   {
@@ -183,9 +201,13 @@ const tasks = [
     checklist: ['Gunakan WHERE', "kondisi = 'Baik'", 'Hasil tidak memuat kondisi selain Baik'],
     placeholder: `SELECT ...\nFROM barang\nWHERE ...;`,
     validate: ({sql, results}) => {
-      const r=lastSelect(results);
-      const ok=/WHERE/i.test(sql) && r && r.rows.length>0 && r.rows.every(x=>norm(x.kondisi)==='baik');
-      return verdict(!!ok, 'Hasil SELECT harus hanya berisi barang dengan kondisi Baik.');
+      const r=lastSelect(results), b=table('barang');
+      if(!r||!b) return verdict(false,'Belum ada hasil SELECT dari tabel barang.');
+      const expected=b.rows.filter(x=>norm(x.kondisi)==='baik');
+      const resultConditions=r.rows.map(x=>x.kondisi).filter(v=>v!==undefined);
+      const conditionsOk=!resultConditions.length || resultConditions.every(v=>norm(v)==='baik');
+      const ok=/\bWHERE\b/i.test(sql) && r.rows.length===expected.length && r.rows.length>0 && conditionsOk;
+      return verdict(!!ok, "Gunakan WHERE kondisi = 'Baik' dan pastikan hasil hanya memuat seluruh barang yang kondisinya Baik.");
     }
   },
   {
@@ -193,11 +215,17 @@ const tasks = [
     prompt: `Tampilkan hanya barang dari kategori <b>Perangkat Input</b>. Anda boleh menggunakan id_kategori atau JOIN ke tabel kategori.`,
     checklist: ['Gunakan WHERE', 'Hasil memuat Keyboard USB dan Mouse USB', 'Tidak memuat kategori lain'],
     placeholder: `SELECT ...\nFROM barang\n...\nWHERE ...;`,
-    validate: ({results}) => {
-      const r=lastSelect(results); if(!r) return verdict(false,'Belum ada hasil SELECT.');
-      const names=r.rows.map(x=>norm(x.nama_barang || x.Barang || x.barang)).filter(Boolean);
-      const ok=names.includes('keyboard usb') && names.includes('mouse usb') && names.length>=2;
-      return verdict(ok, 'Hasil minimal harus memuat Keyboard USB dan Mouse USB sebagai Perangkat Input.');
+    validate: ({sql,results}) => {
+      const r=lastSelect(results), b=table('barang'), k=table('kategori');
+      if(!r||!b||!k) return verdict(false,'Belum ada hasil SELECT atau tabel pendukung belum tersedia.');
+      const kat=k.rows.find(x=>norm(x.nama_kategori)==='perangkat input');
+      if(!kat) return verdict(false,'Kategori Perangkat Input belum ditemukan.');
+      const expected=b.rows.filter(x=>String(x.id_kategori)===String(kat.id_kategori));
+      const expectedNames=expected.map(x=>norm(x.nama_barang)).sort();
+      const resultNames=r.rows.map(x=>norm(x.nama_barang || x.Barang || x.barang)).filter(Boolean).sort();
+      const sameNames=resultNames.length===expectedNames.length && expectedNames.every((v,i)=>resultNames[i]===v);
+      const ok=/\bWHERE\b/i.test(sql) && sameNames;
+      return verdict(ok, 'Hasil harus hanya memuat semua barang kategori Perangkat Input (Keyboard USB dan Mouse USB), tanpa kategori lain.');
     }
   },
   {
@@ -207,8 +235,15 @@ const tasks = [
     placeholder: `SELECT ... FROM barang ORDER BY nama_barang ASC;\n\nSELECT ... FROM barang ORDER BY nama_barang DESC;`,
     validate: ({sql, results}) => {
       const selects=(results||[]).filter(r=>r.type==='select');
-      const ok=/ORDER\s+BY\s+(?:barang\.)?nama_barang\s+ASC/i.test(sql) && /ORDER\s+BY\s+(?:barang\.)?nama_barang\s+DESC/i.test(sql) && selects.length>=2;
-      return verdict(ok, 'Harus ada dua SELECT: satu ASC dan satu DESC berdasarkan nama_barang.');
+      if(selects.length<2) return verdict(false,'Harus ada dua SELECT: A-Z dan Z-A.');
+      const names=(r)=>r.rows.map(x=>String(x.nama_barang??x.Nama??x.nama??''));
+      const ascNames=names(selects[0]), descNames=names(selects[1]);
+      const ascSorted=[...ascNames].sort((a,b)=>a.localeCompare(b,'id'));
+      const descSorted=[...ascSorted].reverse();
+      const same=(a,b)=>a.length===b.length && a.every((v,i)=>v===b[i]);
+      const hasTwoOrder=(sql.match(/\bORDER\s+BY\b/gi)||[]).length>=2;
+      const ok=hasTwoOrder && same(ascNames,ascSorted) && same(descNames,descSorted);
+      return verdict(ok, 'Buat dua SELECT dengan ORDER BY nama_barang: query pertama A-Z (ASC boleh ditulis atau dibiarkan default), query kedua DESC.');
     }
   },
   {

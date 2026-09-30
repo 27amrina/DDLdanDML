@@ -184,6 +184,7 @@ class MiniSqlEngine {
       .replace(/\bAUTO_INCREMENT\b/ig, ' ')
       .replace(/\bAUTOINCREMENT\b/ig, ' ')
       .replace(/\bNOT\s+NULL\b/ig, ' ')
+      .replace(/\bNULL\b/ig, ' ')
       .replace(/\bUNIQUE\b/ig, ' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -197,6 +198,46 @@ class MiniSqlEngine {
       unique: /\bUNIQUE\b/i.test(original),
       defaultValue
     };
+  }
+
+  evalAssignmentExpression(expr, ctx) {
+    const s = String(expr || '').trim();
+    if (!s) throw new Error('Nilai pada SET tidak boleh kosong.');
+
+    // Literal umum: angka, string, NULL, atau DEFAULT.
+    if (/^NULL$/i.test(s) || /^DEFAULT$/i.test(s) || /^-?\d+(?:\.\d+)?$/.test(s) ||
+        ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"')))) {
+      return this.parseValue(s);
+    }
+
+    // Referensi kolom langsung, misalnya SET jumlah = jumlah.
+    const direct = this.resolveOperand(s, ctx);
+    if (direct !== s || Object.keys(ctx).some(k => k.toLowerCase() === s.replace(/`/g,'').toLowerCase())) {
+      return direct;
+    }
+
+    // Aritmetika sederhana yang aman untuk latihan DML, misalnya:
+    // SET jumlah = jumlah - 3 atau SET jumlah = 20 - 3.
+    const am = s.match(/^(.+?)\s*([+\-*/])\s*(.+)$/);
+    if (am) {
+      const left = this.resolveOperand(am[1], ctx);
+      const right = this.resolveOperand(am[3], ctx);
+      const a = Number(left), b = Number(right);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) {
+        throw new Error(`Ekspresi SET '${s}' harus menggunakan nilai/kolom numerik untuk operasi ${am[2]}.`);
+      }
+      switch (am[2]) {
+        case '+': return a + b;
+        case '-': return a - b;
+        case '*': return a * b;
+        case '/':
+          if (b === 0) throw new Error('Pembagian dengan nol tidak diperbolehkan.');
+          return a / b;
+      }
+    }
+
+    // Jika bukan ekspresi, pertahankan perilaku literal teks lama agar simulator tetap sederhana.
+    return this.parseValue(s);
   }
 
   execute(sql) {
@@ -328,21 +369,64 @@ class MiniSqlEngine {
       return { type: 'message', message: `Tabel ${name} berhasil dibuat.` };
     }
 
-    if ((m = s.match(/^ALTER\s+TABLE\s+([\w`-]+)\s+ADD(?:\s+COLUMN)?\s+([\w`-]+)\s+([A-Za-z]+(?:\s*\([^)]*\))?)([\s\S]*)$/i))) {
+    // ALTER TABLE mendukung satu atau beberapa ADD COLUMN dalam satu statement.
+    // Contoh yang didukung:
+    // ALTER TABLE barang ADD harga DECIMAL(12,2);
+    // ALTER TABLE barang ADD COLUMN harga DECIMAL(12,2), ADD COLUMN merek VARCHAR(50);
+    if ((m = s.match(/^ALTER\s+TABLE\s+([\w`-]+)\s+([\s\S]+)$/i))) {
       const table = this.requireTable(this.normalizeName(m[1]));
-      const colName = this.normalizeName(m[2]);
-      if (table.columns.some(c => c.name.toLowerCase() === colName.toLowerCase())) {
-        throw new Error(`Kolom '${colName}' sudah ada pada tabel '${table.name}'.`);
+      const actions = this.splitTopLevel(m[2]);
+      if (!actions.length) throw new Error('ALTER TABLE belum memiliki aksi. Gunakan ADD COLUMN untuk menambahkan field.');
+
+      let added = 0;
+      const addedNames = [];
+      for (const rawAction of actions) {
+        const action = rawAction.trim();
+        const am = action.match(/^ADD(?:\s+COLUMN)?(?:\s+IF\s+NOT\s+EXISTS)?\s+([\w`-]+)\s+([A-Za-z]+(?:\s*\([^)]*\))?)([\s\S]*)$/i);
+        if (!am) {
+          throw new Error(`Aksi ALTER TABLE belum didukung/tidak valid: ${action}. Contoh: ALTER TABLE barang ADD COLUMN harga DECIMAL(12,2);`);
+        }
+        const ifNotExists = /^ADD(?:\s+COLUMN)?\s+IF\s+NOT\s+EXISTS\b/i.test(action);
+        const colName = this.normalizeName(am[1]);
+        const duplicate = table.columns.some(c => c.name.toLowerCase() === colName.toLowerCase());
+        if (duplicate) {
+          if (ifNotExists) continue;
+          throw new Error(`Kolom '${colName}' sudah ada pada tabel '${table.name}'.`);
+        }
+
+        const type = this.validateDataType(am[2], colName);
+        let optionText = String(am[3] || '').trim();
+        let position = null;
+        let pm;
+        if ((pm = optionText.match(/(?:^|\s)AFTER\s+([\w`-]+)\s*$/i))) {
+          position = { type: 'after', column: this.normalizeName(pm[1]) };
+          optionText = optionText.slice(0, pm.index).trim();
+        } else if (/(?:^|\s)FIRST\s*$/i.test(optionText)) {
+          position = { type: 'first' };
+          optionText = optionText.replace(/(?:^|\s)FIRST\s*$/i, '').trim();
+        }
+
+        const opts = this.parseColumnOptions(optionText, colName);
+        if (opts.autoIncrement && !/^(?:INT|INTEGER|BIGINT|SMALLINT|TINYINT)$/.test(type)) {
+          throw new Error(`AUTO_INCREMENT pada kolom '${colName}' harus menggunakan tipe bilangan bulat seperti INT.`);
+        }
+        const col = { name: colName, type, ...opts };
+
+        if (position?.type === 'first') {
+          table.columns.unshift(col);
+        } else if (position?.type === 'after') {
+          const pos = table.columns.findIndex(c => c.name.toLowerCase() === position.column.toLowerCase());
+          if (pos < 0) throw new Error(`Kolom acuan AFTER '${position.column}' tidak ditemukan pada tabel '${table.name}'.`);
+          table.columns.splice(pos + 1, 0, col);
+        } else {
+          table.columns.push(col);
+        }
+        for (const row of table.rows) row[colName] = opts.defaultValue === undefined ? null : opts.defaultValue;
+        added++;
+        addedNames.push(colName);
       }
-      const type = this.validateDataType(m[3], colName);
-      const opts = this.parseColumnOptions(m[4] || '', colName);
-      if (opts.autoIncrement && !/^(?:INT|INTEGER|BIGINT|SMALLINT|TINYINT)$/.test(type)) {
-        throw new Error(`AUTO_INCREMENT pada kolom '${colName}' harus menggunakan tipe bilangan bulat seperti INT.`);
-      }
-      const col = { name: colName, type, ...opts };
-      table.columns.push(col);
-      for (const row of table.rows) row[colName] = opts.defaultValue === undefined ? null : opts.defaultValue;
-      return { type: 'message', message: `Kolom ${colName} ditambahkan ke tabel ${table.name}.` };
+      const label = addedNames.length ? addedNames.join(', ') : 'tidak ada kolom baru';
+      return { type: 'message', message: `${added} kolom ditambahkan ke tabel ${table.name}: ${label}.`, affectedRows: added };
     }
 
     if ((m = s.match(/^DROP\s+TABLE(?:\s+IF\s+EXISTS)?\s+([\w`-]+)$/i))) {
@@ -403,7 +487,7 @@ class MiniSqlEngine {
       const assignments = this.splitTopLevel(m[2]).map(part => {
         const am = part.match(/^([\w`.-]+)\s*=\s*([\s\S]+)$/);
         if (!am) throw new Error(`SET tidak dikenali: ${part}`);
-        return { column: this.normalizeName(am[1].split('.').pop()), value: this.parseValue(am[2]) };
+        return { column: this.normalizeName(am[1].split('.').pop()), expression: am[2].trim() };
       });
       const where = m[3] ? m[3].trim() : null;
       let affected = 0;
@@ -414,7 +498,7 @@ class MiniSqlEngine {
           for (const a of assignments) {
             if (!table.columns.some(c => c.name.toLowerCase() === a.column.toLowerCase())) throw new Error(`Kolom '${a.column}' tidak ditemukan.`);
             const actual = table.columns.find(c => c.name.toLowerCase() === a.column.toLowerCase()).name;
-            candidate[actual] = a.value;
+            candidate[actual] = this.evalAssignmentExpression(a.expression, ctx);
           }
           this.validateRow(table, candidate, row);
           Object.assign(row, candidate);
@@ -499,11 +583,14 @@ class MiniSqlEngine {
     }
   }
 
-  rowContext(tableName, row) {
+  rowContext(tableName, row, alias = null) {
     const ctx = {};
     for (const [k, v] of Object.entries(row)) {
       ctx[k] = v;
       ctx[`${tableName}.${k}`] = v;
+      if (alias && String(alias).toLowerCase() !== String(tableName).toLowerCase()) {
+        ctx[`${alias}.${k}`] = v;
+      }
     }
     return ctx;
   }
@@ -579,19 +666,28 @@ class MiniSqlEngine {
   }
 
   executeSelect(s) {
-    const m = s.match(/^SELECT\s+([\s\S]+?)\s+FROM\s+([\w`-]+)([\s\S]*)$/i);
+    // Mendukung nama tabel langsung maupun alias, misalnya:
+    // FROM barang b JOIN kategori k ON b.id_kategori = k.id_kategori
+    const m = s.match(/^SELECT\s+([\s\S]+?)\s+FROM\s+([\w`-]+)(?:\s+(?:AS\s+)?((?!INNER\b|JOIN\b|WHERE\b|ORDER\b)[\w`-]+))?([\s\S]*)$/i);
     if (!m) throw new Error('Format SELECT tidak dikenali.');
     const selectPart = m[1].trim();
     const baseName = this.normalizeName(m[2]);
-    let tail = m[3] || '';
+    const baseAlias = m[3] ? this.normalizeName(m[3]) : null;
+    let tail = m[4] || '';
     const base = this.requireTable(baseName);
-    let contexts = base.rows.map(r => this.rowContext(baseName, r));
+    const aliasMap = { [baseName.toLowerCase()]: baseName };
+    if (baseAlias) aliasMap[baseAlias.toLowerCase()] = baseName;
+    let contexts = base.rows.map(r => this.rowContext(baseName, r, baseAlias));
 
     const joins = [];
     while (true) {
-      const jm = tail.match(/^\s*(?:INNER\s+)?JOIN\s+([\w`-]+)\s+ON\s+([\s\S]+?)(?=\s+(?:INNER\s+)?JOIN\s+|\s+WHERE\s+|\s+ORDER\s+BY\s+|$)/i);
+      const jm = tail.match(/^\s*(?:INNER\s+)?JOIN\s+([\w`-]+)(?:\s+(?:AS\s+)?((?!ON\b)[\w`-]+))?\s+ON\s+([\s\S]+?)(?=\s+(?:INNER\s+)?JOIN\s+|\s+WHERE\s+|\s+ORDER\s+BY\s+|$)/i);
       if (!jm) break;
-      joins.push({ table: this.normalizeName(jm[1]), on: jm[2].trim() });
+      const tableName = this.normalizeName(jm[1]);
+      const alias = jm[2] ? this.normalizeName(jm[2]) : null;
+      joins.push({ table: tableName, alias, on: jm[3].trim() });
+      aliasMap[tableName.toLowerCase()] = tableName;
+      if (alias) aliasMap[alias.toLowerCase()] = tableName;
       tail = tail.slice(jm[0].length);
     }
 
@@ -600,7 +696,7 @@ class MiniSqlEngine {
       const nextContexts = [];
       for (const ctx of contexts) {
         for (const row of jt.rows) {
-          const merged = { ...ctx, ...this.rowContext(join.table, row) };
+          const merged = { ...ctx, ...this.rowContext(join.table, row, join.alias) };
           if (this.evalCondition(join.on, merged)) nextContexts.push(merged);
         }
       }
@@ -643,7 +739,8 @@ class MiniSqlEngine {
       columns.push(...plainCols);
       for (const ctx of contexts) {
         const row = {};
-        for (const c of plainCols) row[c] = this.resolveOperand(`${baseName}.${c}`, ctx);
+        const qualifier = baseAlias || baseName;
+        for (const c of plainCols) row[c] = this.resolveOperand(`${qualifier}.${c}`, ctx);
         rows.push(row);
       }
     } else {
@@ -659,9 +756,10 @@ class MiniSqlEngine {
         const row = {};
         for (const p of parsedSpecs) {
           if (p.expr.endsWith('.*')) {
-            const tn = p.expr.slice(0, -2);
-            const t = this.requireTable(tn);
-            for (const c of t.columns) row[c.name] = this.resolveOperand(`${tn}.${c.name}`, ctx);
+            const qualifier = p.expr.slice(0, -2);
+            const actualName = aliasMap[qualifier.toLowerCase()] || qualifier;
+            const t = this.requireTable(actualName);
+            for (const c of t.columns) row[c.name] = this.resolveOperand(`${qualifier}.${c.name}`, ctx);
           } else {
             row[p.alias] = this.resolveOperand(p.expr, ctx);
           }
